@@ -1,0 +1,16 @@
+numpy>=1.23
+
+[analysis]
+matplotlib>=3.6
+
+[dev]
+pytest>=7
+
+[dqn]
+torch>=2.2
+
+[play]
+pygame>=2.5
+
+[ppo]
+torch>=2.2

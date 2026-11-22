@@ -1,0 +1,935 @@
+Metadata-Version: 2.4
+Name: tron-light-cycles-phase5-6
+Version: 0.5.6
+Summary: Deterministic simultaneous two-player Tron Light Cycles RL environment
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.23
+Provides-Extra: dev
+Requires-Dist: pytest>=7; extra == "dev"
+Provides-Extra: play
+Requires-Dist: pygame>=2.5; extra == "play"
+Provides-Extra: dqn
+Requires-Dist: torch>=2.2; extra == "dqn"
+Provides-Extra: ppo
+Requires-Dist: torch>=2.2; extra == "ppo"
+Provides-Extra: analysis
+Requires-Dist: matplotlib>=3.6; extra == "analysis"
+
+# Phase 5.6 available
+
+For the stable-DQN and balanced-PPO scripted-opponent training workflow, see **[README_PHASE56.md](README_PHASE56.md)**. Existing Phase 5.5 documentation below remains for historical reproducibility.
+
+---
+
+# Phase 5.5 — Teacher-assisted enhanced DQN and PPO
+
+**Start with [README_PHASE55.md](README_PHASE55.md)** for the new one-command training campaign, upgraded algorithms, checkpoint safety and independent evaluation. The material below documents the inherited Phase 5.4 project.
+
+---
+
+# Phase 5.4 — CPU Evolution Strategies and Augmented Random Search
+
+This release builds on Phase 5.3 without changing the Tron rules, DQN, PPO,
+scripted opponents, observation encoder, common benchmark or Pygame interface.
+It adds an **optimizer-by-representation CPU comparison** to test whether the
+legacy genetic algorithm is the limiting factor in Neuroevolution.
+
+## Recommended four-way study
+
+| Variant | Policy representation | Optimisation method |
+| --- | --- | --- |
+| `cpu_ga_legacy` | Legacy 192,467-parameter dense network | Original elitist genetic algorithm |
+| `cpu_es_legacy` | Same legacy dense network | Antithetic Evolution Strategies (ES) |
+| `cpu_ars_linear` | Linear full-board 35,103-parameter network | Augmented Random Search (ARS) |
+| `cpu_es_linear` | Same linear full-board network | Antithetic ES |
+
+All methods receive the same 13-channel full-board observation, choose among
+Left / Straight / Right, and learn from the **unchanged terminal reward**:
+win +1, draw 0, loss -1. The linear representation is exactly a linear mapping
+from the full-board observation to three action scores, with no new privileged
+features. Antithetic ES and ARS evaluate `θ + σε` and `θ − σε` on **identical**
+paired starting configurations, opponent choices and random seeds. Opponent
+quotas are balanced within each iteration. ES uses mirrored finite differences;
+ARS uses top-ranked mirrored directions with fitness normalisation. Global L2
+update clipping is a numerical safeguard. No backpropagation is used.
+
+These are different architectures *and* search methods. Differences between
+`cpu_ga_legacy` vs `cpu_es_legacy`, and `cpu_ars_linear` vs `cpu_es_linear`,
+isolate the optimiser. Cross-architecture differences do not isolate it.
+The key comparison axis is **active training seconds**, not number of games.
+
+## Installation — Ubuntu on WSL
+
+Download the ZIP to the Windows Downloads folder. In Ubuntu:
+
+```bash
+cd ~/ai_games
+unzip "/mnt/c/Users/Local Admin/Downloads/tron_light_cycles_phase5_4.zip"
+cd tron_light_cycles_phase5_4
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[dqn,ppo,play,dev,analysis]'
+pytest -q
+```
+
+If your Windows profile folder is not literally `Local Admin`, replace that
+part of the path with the actual profile-directory name.
+
+## First a one-minute-per-variant pilot
+
+```bash
+python -m tron_ai.evolution_study \
+    --seconds 60 \
+    --eval-interval 30 \
+    --eval-pairs 4 \
+    --seeds 2026 \
+    --variants cpu_ga_legacy cpu_es_legacy cpu_ars_linear cpu_es_linear \
+    --out results/cpu_search_pilot
+```
+
+This is a software and throughput pilot, **not** a reliable algorithm ranking.
+The total requested active training budget is four minutes, plus evaluation,
+checkpointing and generation-boundary overshoot.
+
+## Five-minute-per-variant comparison
+
+```bash
+python -m tron_ai.evolution_study \
+    --seconds 300 \
+    --eval-interval 60 \
+    --eval-pairs 8 \
+    --seeds 2026 \
+    --variants cpu_ga_legacy cpu_es_legacy cpu_ars_linear cpu_es_linear \
+    --out results/cpu_search_5min
+```
+
+This is **20 minutes of requested active training in total**, plus evaluation
+overhead and generation-boundary overshoot. It launches one subprocess at a
+time and caps BLAS/OpenMP threads to one for comparable CPU budgets. Each run
+writes `best.npz`, `evaluations.jsonl`, `episodes.jsonl`,
+`generation_stats.jsonl`, timing metadata and checkpoint snapshots. The study
+writes `comparison.csv`, `aggregate_by_variant.csv`, `comparison.png`, and a
+manifest recording every exact command. Use a fresh output directory per run.
+
+To generate additional plots for one run:
+
+```bash
+python -m tron_ai.train plot results/cpu_search_5min/cpu_ars_linear_seed2026
+explorer.exe results/cpu_search_5min
+```
+
+For ES and ARS, `search_diagnostics.png` reports mirrored trial fitness,
+parameter-update size, how often positive and negative perturbations differ,
+and the mean rewards by opponent. Existing plot outputs are retained.
+
+To play the **best** saved evolutionary checkpoint (any of GA, ES or ARS):
+
+```bash
+python -m tron_ai.play --checkpoint results/cpu_search_5min/cpu_ars_linear_seed2026/best.npz
+```
+
+All variants save `algorithm=evolution` and their architecture / optimiser in
+checkpoint metadata, so the established Pygame player and reference evaluator
+can load them without an additional interface.
+
+## Further controlled evaluation
+
+After the pilot, repeat promising configurations with multiple seeds; for
+example:
+
+```bash
+python -m tron_ai.evolution_study \
+    --seconds 300 --eval-interval 60 --eval-pairs 8 \
+    --seeds 2027 2028 \
+    --variants cpu_ga_legacy cpu_es_legacy cpu_ars_linear cpu_es_linear \
+    --out results/cpu_search_more_seeds
+```
+
+**Keep the independent holdout seeds untouched until final selection.** The
+64-game fixed validation suite with `--eval-pairs 8` is sufficient for learning
+curves but too small for definitive rankings, especially when selecting the
+best of multiple checkpoints. Do not infer superiority from smoke-test scores.
+
+## Direct command-line examples
+
+```bash
+python -m tron_ai.train evolution \
+    --optimizer ars --architecture linear --directions 12 --top-directions 6 \
+    --fitness-pairs 8 --noise-std 0.025 --step-size 0.01 \
+    --seconds 300 --eval-interval 60 --eval-pairs 8 \
+    --out results/ars_linear_direct
+
+python -m tron_ai.train evolution \
+    --optimizer es --architecture legacy --directions 12 \
+    --fitness-pairs 8 --noise-std 0.025 --step-size 0.01 \
+    --seconds 300 --eval-interval 60 --eval-pairs 8 \
+    --out results/es_legacy_direct
+```
+
+Notes: ES/ARS batch sizes are defined by mirrored directions and fitness pairs;
+`--population` and `--elites` belong to the genetic algorithm only. ES/ARS
+checkpoints can be warm-started with `--init-from` when the architecture matches;
+this reloads policy weights but does **not** resume the optimiser state. The
+previous project and algorithms are still present.
+
+---
+
+# Tron Light Cycles — Phase 5.3: CNN Neuroevolution architecture ablation
+
+This is a **standalone continuation of Phase 5.2**. The game engine, rules, full-board 13-channel observations, scripted opponents, DQN, PPO, checkpoints, Pygame, and fixed evaluation suite remain available. The new evolutionary policy can use a **multi-scale convolutional network (CNN)**, alongside the previous full-board **legacy** dense architecture and **compact** pooled architecture.
+
+**Do not interpret the included three-second training smoke test as evidence of stronger play.** The aim is to compare a spatial CNN with the known legacy baseline at matched *active training time*, and independently measure inference speed. The new CNN's performance on long runs is not yet established.
+
+## Install in Ubuntu / WSL
+
+```bash
+cd ~/ai_games
+unzip "/mnt/c/Users/Local Admin/Downloads/tron_light_cycles_phase5_3.zip"
+cd tron_light_cycles_phase5_3
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[dqn,ppo,play,dev,analysis]'
+pytest -q
+```
+
+`Local Admin` is the Windows display name supplied by the user. If the Windows profile directory differs, check `ls /mnt/c/Users/` and use the actual folder name. The preceding Phase 5.x folders are not overwritten.
+
+## New architecture (`--architecture cnn`)
+
+- **Full-board observation (13 × 30 × 30)**, exactly the same information as for DQN and PPO; no action masking, handcrafted collision rule, special safety features or reward shaping.
+- **Two stride-2 3 × 3 convolutions:** 13→8 feature maps, then 8→12 feature maps. Filters share weights across board positions.
+- **Multi-scale global representation:** average-pool the first feature scale to 5 × 5, and retain the second feature scale with its native positional layout (8 × 8 on a 30 × 30 observation).
+- **Detailed local branch:** extract a 7 × 7 patch around the player's head from the very same observation, with out-of-board cells marked as boundaries; embed into 16 features.
+- **Fusion head:** concatenate global and local features, run a 32-neuron ReLU layer, and produce three scores (Left/Straight/Right).
+- **Weights trained solely by selection, copying and random mutation; no gradient descent.**
+
+At the standard board size: 43,647 evolved weights, compared with 192,467 for the legacy dense network and 20,243 for compact pooled network. The new network is **not simply a smaller version of the old compact network**: it learns spatial filters and preserves higher-resolution global layout at the deepest scale. Its extra NumPy operations make it slower per inference than legacy on the author's test CPU; benchmark your own WSL hardware before training long runs.
+
+Existing legacy and compact NPZ checkpoints load unchanged through inferred weight shapes. A CNN checkpoint also loads through the existing `tron_ai.play --checkpoint ...` and `tron_ai.train evaluate ...` paths. Warm-starting across different architectures is correctly rejected; it is *not* possible to convert legacy weights into CNN weights directly.
+
+## 1. Benchmark just inference speed (no training)
+
+```bash
+python -m tron_ai.evolution_benchmark \
+  --samples 600 --repeats 5 \
+  --architectures legacy cnn \
+  --out results/cnn_inference_on_wsl.json
+```
+
+This runs both initialised policies on the **same cached, reproducible observations**, excluding board generation. It prints parameters, median microseconds per action and actions per second. It measures *raw inference only*; match duration and selection costs are separate.
+
+## 2. Controlled architecture experiment — 5 minutes per model
+
+```bash
+python -m tron_ai.evolution_study \
+  --seconds 300 \
+  --eval-interval 60 \
+  --eval-pairs 8 \
+  --seeds 2026 \
+  --variants tuned_legacy tuned_cnn \
+  --out results/phase53_architecture_comparison
+```
+
+Both variants use population=16, elites=4, 16 paired openings per candidate, balanced survival opponents, mutation rate=0.01, fixed sigma=0.02, identical validation cases and requested active training time. The **only intended experimental factor is the architecture**. Different architectures naturally initialise different weights and may process different numbers of steps in the same training time. Note actual time may overshoot at generation boundaries. Overall requested active training: 10 minutes, plus evaluations and checkpoint saving.
+
+Outputs include per-run `summary.json`, `evaluations.jsonl`, `generation_stats.jsonl`, `best.npz`, and the aggregated `comparison.csv`, `aggregate_by_variant.csv`, and `comparison.png` in the parent folder.
+
+```bash
+python -m tron_ai.train plot results/phase53_architecture_comparison/tuned_cnn_seed2026
+python -m tron_ai.train plot results/phase53_architecture_comparison/tuned_legacy_seed2026
+explorer.exe results/phase53_architecture_comparison
+```
+
+Follow with new training seeds `2027 2028` in a **new output directory**, provided the first experiment is worth repeating. Do not tune against the untouched final holdout split.
+
+## 3. Train only the CNN directly
+
+```bash
+python -m tron_ai.train evolution \
+  --architecture cnn \
+  --seconds 300 --eval-interval 60 --eval-pairs 8 \
+  --stage survival --population 16 --elites 4 --fitness-pairs 16 \
+  --mutation-rate 0.01 --mutation-sigma 0.02 \
+  --seed 2026 --out results/my_evolved_cnn
+```
+
+In this version, the standalone evolution command **still defaults to compact** for backwards-compatible CLI behaviour. Always set `--architecture cnn` or `--architecture legacy` explicitly when running these experiments.
+
+To play against the selected model (after training):
+
+```bash
+python -m tron_ai.play --checkpoint results/my_evolved_cnn/best.npz
+```
+
+## 4. DQN and PPO plan
+
+These algorithms are **implemented and learning but not yet presentation-ready**. The user's five-minute Phase 5 results gave PPO a 59.4% best validation score and DQN a 50.8% best score, but both recorded 0/16 wins against Territory Control, and each had only one training seed. Once the CNN ablation is assessed, continue DQN and PPO training through **survival → space → competitive → self-play** with controlled time budgets, monitor per-opponent wins and PPO entropy, compare multiple random seeds, select checkpoints using validation, and perform final holdout and human playtests before assigning Intermediate/Advanced difficulty. The CNN ablation should not delay that work indefinitely.
+
+---
+
+## Previous release documentation
+
+# Tron Light Cycles — Phase 5.2: targeted Neuroevolution optimisation
+
+This standalone release extends Phase 5.1. The original **legacy** full-board Neuroevolution network performed better in the user's three-seed architecture comparison, so **all four Phase 5.2 experiments explicitly train that architecture**. The previous compact model and both checkpoint formats remain available; DQN, PPO, Pygame and the underlying Tron environment are unchanged.
+
+## Install on Ubuntu / WSL
+
+Download `tron_light_cycles_phase5_2.zip` to Windows Downloads. The user's Windows display name is `Local Admin` (with a space); if the Windows profile directory uses a different name, substitute the actual folder listed under `/mnt/c/Users/`.
+
+```bash
+cd ~/ai_games
+unzip "/mnt/c/Users/Local Admin/Downloads/tron_light_cycles_phase5_2.zip"
+cd tron_light_cycles_phase5_2
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[dqn,ppo,play,dev,analysis]'
+pytest -q
+```
+
+The new folder does not replace `tron_light_cycles_phase5_1` or any experiments that were run there. Previously generated results on the user's WSL computer are not embedded in this ZIP; historical bundled smoke-model artifacts from previous releases are preserved.
+
+## What has been implemented
+
+### 1. Configurable *balanced* survival fitness opponent mix
+
+New option: `--survival-safe-fraction 0.5` (control) or `--survival-safe-fraction 0.8` (target increased survival pressure). Only **evolutionary fitness games** in the `survival` stage use this override; the fixed validation benchmark, DQN/PPO training pools and later curriculum-stage distributions remain unchanged. Every population member plays the same pair schedule and the sides are swapped for each opening.
+
+At **16 paired openings per candidate**, 50/50 gives **8 Random + 8 Random Safe pairs** (32 games) per generation, while the 20/80 target gives **3 Random + 13 Random Safe pairs** (18.75% and 81.25% after integer rounding). Use `--fitness-pairs 20` when exact 20/80 ratios are required (4 Random + 16 Safe pairs, 40 games per candidate). Both proportions are stable across generations while actual opening seeds vary.
+
+The mix is intentionally also kept fixed within each generation; this removes varying opponent composition as a source of candidate-comparison noise, but does not remove opening variance or guarantee learning.
+
+### 2. Fixed versus adaptive mutation magnitude
+
+New options:
+
+- `--mutation-schedule fixed` (control): use the specified `--mutation-sigma` for every generation.
+- `--mutation-schedule linear --mutation-sigma-end 0.005`: linearly decrease sigma as active training time progresses, from `--mutation-sigma 0.02` towards `0.005`.
+
+The mutation rate is kept constant at 1%, so the ablation isolates **sigma scheduling**. The schedule is based on the training runner's active seconds **at the start of each generation**, not on generation count; `generation_stats.jsonl` records the exact sigma used when producing the following generation. Because training stops at generation boundaries, the last completed generation may not use the exact endpoint sigma.
+
+### 3. Per-opponent fitness and reproducibility diagnostics
+
+In each run, `generation_stats.jsonl` includes:
+
+- Exact paired-opening quotas and stage.
+- Best / mean / worst candidate fitness, plus population fitness standard deviation.
+- Random and Random Safe fitness distribution across the population.
+- **Best candidate's** win / draw / loss counts and mean reward against each sampled opponent.
+- Training progress and the sigma used to produce the next generation.
+
+The same old `learning_curves.png` and `evolution_generations.png` continue to be generated. A new **`evolution_targeted.png`** shows mutation magnitude, best-candidate opponent-specific fitness and opponent quotas by generation.
+
+### 4. Four-variant controlled ablation launcher
+
+The following is the **recommended first meaningful experiment**. Each run is allocated 300 seconds of active training and uses one separate process. It requests **20 minutes of active training overall**, plus evaluations, checkpointing and any generation-boundary overshoot.
+
+```bash
+python -m tron_ai.evolution_study \
+  --seconds 300 \
+  --eval-interval 60 \
+  --eval-pairs 8 \
+  --seeds 2026 \
+  --variants control_50_fixed safe80_fixed control_50_adaptive safe80_adaptive \
+  --out results/phase52_ablation
+```
+
+| Variant | Fitness matchup target | Mutation sigma |
+|---|---|---|
+| `control_50_fixed` | 50% Random, 50% Safe | Fixed 0.02 |
+| `safe80_fixed` | 20% Random, 80% Safe | Fixed 0.02 |
+| `control_50_adaptive` | 50% Random, 50% Safe | Linear 0.02 → 0.005 |
+| `safe80_adaptive` | 20% Random, 80% Safe | Linear 0.02 → 0.005 |
+
+**All four use `--architecture legacy`, balanced paired games, `fitness_pairs=16`, population 16, elites 4 and mutation rate 0.01.** The 20/80 row is implemented with the 3:13 pair quota as explained above. Use the same board and held-fixed validation seeds across runs, and evaluate on a separate holdout only **after** locking the selection protocol. Do not infer conclusions about superior learning methods from one seed.
+
+Outputs include:
+
+```text
+results/phase52_ablation/
+├── manifest.json
+├── comparison.csv
+├── aggregate_by_variant.csv
+├── comparison.png
+├── control_50_fixed_seed2026/
+├── safe80_fixed_seed2026/
+├── control_50_adaptive_seed2026/
+└── safe80_adaptive_seed2026/
+```
+
+To generate the detailed evolution plots for one run:
+
+```bash
+python -m tron_ai.train plot results/phase52_ablation/safe80_adaptive_seed2026
+explorer.exe results/phase52_ablation
+```
+
+To repeat the four variants with additional independent training seeds after the pilot, use **a different output directory**:
+
+```bash
+python -m tron_ai.evolution_study \
+  --seconds 300 --eval-interval 60 --eval-pairs 8 \
+  --seeds 2027 2028 \
+  --variants control_50_fixed safe80_fixed control_50_adaptive safe80_adaptive \
+  --out results/phase52_additional_seeds
+```
+
+This requests 40 minutes of active training, plus overhead, while keeping the **same 64-game fixed-validation suite** used for seed 2026. Once a configuration is selected, use a separate larger evaluation suite for the final locked comparison.
+
+### Individual evolutionary training example
+
+```bash
+python -m tron_ai.train evolution \
+  --seconds 300 --eval-interval 60 --eval-pairs 8 \
+  --stage survival --population 16 --elites 4 \
+  --architecture legacy --fitness-sampling balanced \
+  --fitness-pairs 16 --survival-safe-fraction 0.8 \
+  --mutation-rate 0.01 --mutation-sigma 0.02 \
+  --mutation-schedule linear --mutation-sigma-end 0.005 \
+  --out results/targeted_legacy
+```
+
+The direct training CLI retains the Phase 5.1 **compact** architecture default for backward compatibility; use `--architecture legacy` as shown for the recommended network.
+
+## Validation and scientific limitations
+
+- All **127 headless tests passed**, with one Pygame smoke test skipped in the packaging environment because Pygame isn't installed. The existing Pygame font regression test passes.
+- Four complete **1.5-second smoke runs** using 4-candidate populations and the four new variants exited successfully and generated comparison CSV/PNG. In the smoke suite, every best validation score was 25%: these runs verify end-to-end operation, **not** improved learning.
+- Training seeds, the fixed validation suite and opponent-match pairings are reproducible; active training time may exceed the request at full-generation boundaries.
+- Differences in win rate need a larger validation sample and independent training seeds. Checkpoints selected from the fixed validation suite should later be evaluated on an untouched holdout; do not tune against the holdout.
+- Training-state resumption (including entire evolving populations) is not yet implemented; saved `.npz` checkpoints support inference and weights-only warm starts.
+
+## Historical Phase 5.1 documentation
+
+---
+
+# Tron Light Cycles — Phase 5.1: improved Neuroevolution
+
+This standalone release extends Phase 5 with **balanced per-generation opponent selection**, a **compact full-board evolutionary network**, generation-level diagnostics, and a **sequential ablation launcher**. DQN, PPO, scripted opponents, the Tron engine, checkpoint format and curriculum runner remain compatible.
+
+## Install on Ubuntu / WSL
+
+Download `tron_light_cycles_phase5_1.zip` into Windows Downloads. In Ubuntu, use your actual Windows username in the ZIP path:
+
+```bash
+cd ~/ai_games
+unzip "/mnt/c/Users/YOUR_USERNAME/Downloads/tron_light_cycles_phase5_1.zip"
+cd tron_light_cycles_phase5_1
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[dqn,ppo,play,dev,analysis]'
+pytest -q
+```
+
+This extracts to a **new directory**; it does **not overwrite** `~/ai_games/tron_light_cycles_phase5` or any experimental results you generated there. The baseline results you collected on your WSL machine are not part of this release ZIP.
+
+## Changes from Phase 5
+
+### 1. Fixed, paired opponent quotas within each evolutionary generation
+
+With the default `--fitness-pairs 16 --stage survival`, **every generation** now has exactly **8 Random and 8 Random Safe paired openings**. Each pair is played twice with player sides reversed (32 games per candidate). Every candidate faces the **same opponent, initial state, action seed and opponent seed** in each corresponding pair. The order and openings vary deterministically by run seed across generations. When the curriculum stage changes, quota proportions follow that stage's scripted-pool weights; self-play includes a roughly 40% frozen-checkpoint quota whenever history exists. With tiny `--fitness-pairs` values, exact proportions may be impossible in a single generation; largest-remainder allocation and rotating ties are used. For comparisons, use at least 16 pairs.
+
+This removes opponent-*composition* variance from candidate comparisons and reduces one contributor to fitness noise. It does **not** make fitness directly comparable between different generations, since different openings and opponent checkpoints may still be sampled. Fixed-seed validation remains the quality metric for checkpoint selection.
+
+`--fitness-sampling random` restores random opponent sampling for controlled ablations. `generation_stats.jsonl` records the actual number of opponent pairs, fitness spread, candidate indices, and opponent-specific population rewards **every generation**. The episode log additionally records `generation`, `candidate` and `pair_index`.
+
+### 2. Compact evolution architecture (default)
+
+Both policy versions receive the **same** 13-channel 30 × 30 full-board observation (for the standard 30 × 24 board). The original v1 flattens the whole observation and concatenates the exact 5 × 5 patch around its head. The new v2 **pools the entire board to a 6 × 6 grid using both means and maxima**, then concatenates the exact 5 × 5 head patch. This is a 16-hidden-unit MLP with significantly fewer weights:
+
+| Architecture | Parameters on 30 × 24 | What changes |
+|---|---:|---|
+| `legacy` | 192,467 | Original dense full-board + local patch |
+| `compact` | 20,243 | Pooled full-board summary + local patch |
+
+This is a **9.5× parameter reduction**, not an additional input or reward signal. Pooling discards some distant spatial detail, so the architectures represent different inductive biases; stronger play is a hypothesis to test, not an established result. All algorithms continue to receive identical original observations from the environment.
+
+**Existing v1 Neuroevolution checkpoints still load in Pygame and evaluation**: architecture is inferred from saved weight shapes. To warm-start training from a v1 checkpoint, specify `--architecture legacy`. There is no automatic conversion of old dense weights to the compact network.
+
+New evolutionary defaults are `--architecture compact --fitness-sampling balanced --fitness-pairs 16 --mutation-rate 0.01 --mutation-sigma 0.02`, building on the previous tuned five-minute experiment. The network changes make this a *new experiment*, not a continuation of its learned weights.
+
+### 3. Generation-by-generation plots
+
+`python -m tron_ai.train plot results/YOUR_RUN` generates:
+
+- `learning_curves.png`: checkpoint win/score trends against time and environment steps.
+- `evolution_diagnostics.png`: best/mean/worst fitness and generations against training time.
+- `evolution_generations.png` **(new)**: fitness distribution, within-generation fitness variance, opponent quotas and mean reward by opponent for every generation.
+
+### 4. Pygame font fix
+
+Preloaded font sizes now include **22 and 26**, fixing the `KeyError: 26` / follow-on `KeyError: 22` from the WSL graphical smoke test. The window itself still needs verification on the user's WSL system.
+
+## Start with a small training run
+
+```bash
+python -m tron_ai.train evolution \
+  --seconds 60 --eval-interval 20 --eval-pairs 8 \
+  --stage survival --population 16 --elites 4 \
+  --fitness-pairs 16 --mutation-rate 0.01 --mutation-sigma 0.02 \
+  --architecture compact --fitness-sampling balanced \
+  --seed 2026 --out results/compact_60s
+python -m tron_ai.train plot results/compact_60s
+```
+
+Play against the new model after training:
+
+```bash
+python -m tron_ai.play --checkpoint results/compact_60s/best.npz
+```
+
+Play against the **previous WSL-trained** v1 checkpoint without retraining:
+
+```bash
+python -m tron_ai.play \
+  --checkpoint ../tron_light_cycles_phase5/results/evolution_tuned_01/best.npz
+```
+
+## Controlled ablation runner
+
+Use the same seed, hardware and requested active training budget across each variant. The launcher runs variants sequentially, writes separate training folders and produces `comparison.csv` and `comparison.png`. It **never runs the holdout evaluation**, reserving that for a final locked protocol.
+
+```bash
+# First isolate architecture; same fitness quota and mutations in both variants:
+python -m tron_ai.evolution_study \
+  --seconds 300 --eval-interval 60 --eval-pairs 8 \
+  --seeds 2026 \
+  --variants tuned_legacy tuned_compact \
+  --out results/architecture_ablation
+
+# Full staged ablation, ideally repeated over multiple seeds (5 variants × 3 seeds):
+python -m tron_ai.evolution_study \
+  --seconds 300 --eval-interval 60 --eval-pairs 8 \
+  --seeds 2026 2027 2028 \
+  --variants legacy_random legacy_balanced legacy_more_pairs tuned_legacy tuned_compact \
+  --out results/full_neuro_ablation
+```
+
+Variants are ordered to help interpret changes: `legacy_random` is the old baseline configuration, `legacy_balanced` changes *only* opponent sampling, `legacy_more_pairs` changes *only* fitness sample size, `tuned_legacy` changes mutation rate **and** sigma, and `tuned_compact` changes *only* network architecture relative to `tuned_legacy`. To isolate mutation rate and sigma separately, run individual `tron_ai.train evolution` commands with each parameter adjusted independently.
+
+The full example requests **75 minutes of active training** (five variants × three seeds × five minutes), plus evaluation overhead. Use one seed and/or shorter training to check the process before a longer experiment. Each experiment must use a fresh output directory. `--report-only --out results/architecture_ablation` recreates an existing finished comparison without retraining. Do not infer algorithm superiority from the bundled short smoke tests.
+
+## Other commands
+
+```bash
+pytest -q
+python -m tron_ai.play
+python -m tron_ai.train evolution --help
+python -m tron_ai.evolution_study --help
+```
+
+## Historical documentation from previous releases
+
+---
+
+# Tron Light Cycles — Phase 5: controlled experiments
+
+Phase 5 adds serial comparison and continuous curricula without resetting the learner or historical pool. All previous algorithms, results and gameplay remain available. See the historical documentation below for individual algorithm options.
+
+## Install (Ubuntu / WSL)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[dqn,ppo,play,dev,analysis]'
+pytest -q
+```
+
+## Recommended first experiment: survival baseline
+
+```bash
+python -m tron_ai.experiment --seconds 300 --eval-interval 60 --eval-pairs 8 --seeds 2026 --profile default --out results/baseline_5min
+```
+
+One subprocess at a time, 300 active seconds per learner (15 minutes total active training, plus evaluation, setup and logging). Each evaluation uses 64 games across the four scripted references. Use `--seeds 2026 2027 2028` for three independent runs per algorithm; order rotates by seed. Use `--profile pilot` in a separate output directory to compare alternative *candidate* settings; these have not been tuned. `--profile smoke` is only for rapid pipeline checks. Keep validation schedules identical across configurations. Do not choose hyperparameters using holdout scores.
+
+## Continuous curriculum
+
+```bash
+python -m tron_ai.experiment --seconds 1800 --eval-interval 180 --eval-pairs 8 --seeds 2026 --curriculum survival:0.4,space:0.25,competitive:0.15,selfplay:0.2 --out results/curriculum_30min
+```
+
+Each fraction is a share of requested active time, not episode count. Fractions must be positive and sum to one. Stages switch at the next episode or generation boundary, with an extra checkpoint at a crossed boundary. Very short stages may be skipped if a batch overshoots. `stages.json` and episode logs record the actual schedule. The learner, optimizer (if applicable), exploration state, population and historical pool stay in memory across transitions. The self-play stage uses 40% same-algorithm historical policies when available. There is no cross-algorithm training pool or mastery-based progression yet.
+
+## Reporting and held-out evaluation
+
+The top-level output directory contains `manifest.json`, `comparison.csv`, `aggregate.json`, `comparison.png`, child logs, and one directory per algorithm/seed. Each run preserves checkpoint metadata, raw evaluation and training rows, stage transitions and time breakdown. `--report-only --out PATH` rebuilds the report for fully completed runs. The manifest stores exact process commands (including machine-specific absolute paths), not a portable replay script. Use the CLI to reproduce a run on another machine. For an individual curve: `python -m tron_ai.train plot PATH/dqn_seed2026`.
+
+After choosing a single final protocol using validation only, run a fresh multi-seed experiment with `--holdout-pairs 20 --holdout-seed 271828183` (160 held-out reference games per selected policy). Holdout is off by default. The new seed is reserved for final evaluation; do not tune on it. Selection remains based on highest validation score (wins + half draws), with earliest checkpoint winning ties. A zero-time checkpoint may be selected. This seed is independent of the earlier smoke holdout. Scores and strict win rates are different. Plot actual training times rather than assuming budgets are exact. CPU thread limits are requested, not hardware isolation guarantees. Close other demanding programs when benchmarking. For formal comparisons use multiple seeds and report variability; timings are hardware-dependent. No exact resume from interrupted training; use a new output directory or report completed runs only.
+
+## Bundled Phase 5 smoke run
+
+`results/phase5_smoke/` contains a four-second requested-budget curriculum test on each algorithm, eight validation games per checkpoint, one seed, no holdout. The evolutionary run was restarted after the execution wrapper interrupted it. Its actual 6.35 seconds substantially exceeds the target due to generation boundaries. All three reached the self-play stage, but only PPO actually sampled historical opponents during this tiny run. These results are plumbing checks, not a fair ranking or trained presentation models.
+
+## Historical documentation
+
+# Tron Light Cycles — Phase 4B: PPO
+
+This standalone release adds CPU PyTorch Proximal Policy Optimisation (PPO) alongside Double DQN. The engine, observation encoder, rewards, scripted agents, tournament and common timing/evaluation runner are unchanged. All previous results are preserved.
+
+## Quick start (Ubuntu / WSL)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[dqn,ppo,play,dev,analysis]'
+pytest -q
+python -m tron_ai.play --checkpoint results/dqn_smoke/best.npz --checkpoint results/ppo_smoke/checkpoints/checkpoint_0003.npz --opponent ppo
+```
+
+Keys 1–4 select scripted opponents; 5 selects DQN and 6 selects PPO when both are loaded. If only PPO is loaded it is key 5. Repeat `--checkpoint` once per algorithm; models must have identical board configurations. The PPO final checkpoint contains updated weights but is not stronger on the recorded fixed evaluation. The PPO `best.npz` is the untrained baseline because all four validation scores tied and the common selection rule keeps the earliest snapshot. Neither bundled learner is a calibrated presentation opponent. To check graphics locally with both models use the same play command with `--smoke-test` (optionally `SDL_VIDEODRIVER=dummy` for a headless check).
+
+## PPO training
+
+```bash
+python -m tron_ai.train ppo --seconds 300 --eval-interval 60 --eval-pairs 4 --stage survival --out results/ppo_survival
+python -m tron_ai.train plot results/ppo_survival
+python -m tron_ai.train evaluate results/ppo_survival/best.npz --pairs 20 --split holdout --out results/ppo_survival_holdout
+```
+
+Use a fresh output directory each time. After survival improves, warm-start a new curriculum stage with `--init-from results/ppo_survival/best.npz --stage space` and a different `--out`. This resets the optimizer, rollout, random stream and historical pool, not exact training resumption. `--stage selfplay` enables the existing historical pool. No automatic curriculum, GPU training or full optimizer-state resumption is provided.
+
+The actor–critic shares the DQN global CNN and local head-centred 5 × 5 feature encoder, with distinct policy logits and scalar state-value heads. The initial actor is approximately uniform. Training samples categorical actions (no epsilon-greedy); evaluation and gameplay also sample the learned policy using independent seeded RNGs, rather than forcing its argmax. No additional state, action masking or reward shaping. The critic is trained using GAE returns, with terminal masks across game boundaries and value bootstrap at a nonterminal rollout boundary. Rollouts may span matches. Old action log probabilities are frozen during the clipped policy updates. Each completed rollout is discarded after its update epochs. A partially filled final rollout is not optimized; the pending step count is logged. Evaluations do not clear the rollout or change learner weights. This preserves the common episode-boundary time-budget rules and avoids extra unbudgeted updates.
+
+Defaults: 512 rollout steps, minibatch 64, 4 epochs, learning rate 0.0003, gamma 0.99, GAE lambda 0.95, clip 0.2, entropy coefficient 0.02, value coefficient 0.5, max gradient norm 0.5, one CPU thread. See `python -m tron_ai.train ppo --help`. Rollout size must be divisible by minibatch size.
+
+`evaluations.jsonl` logs collection policy entropy (maximum ln(3) ≈ 1.099 nats), training action fractions, policy/value losses, update entropy, approximate KL, clip fraction, optimizer steps, completed rollouts and pending steps. Metrics summarize each preceding evaluation interval except cumulative counts. Null means no applicable samples. `train plot` also produces `ppo_diagnostics.png`. Watch for low entropy and domination by one action, but use win rates and gameplay to assess strategy. High entropy alone does not imply effective learning.
+
+### Bundled PPO smoke experiment
+
+```bash
+python -m tron_ai.train ppo --seconds 12 --eval-interval 4 --eval-pairs 2 --rollout-steps 128 --batch-size 32 --epochs 4 --out results/ppo_smoke_repeat
+```
+
+Measured run: 12.0017 active seconds, 3,171 environment steps, 356 episodes, 24 completed rollouts, 384 optimizer updates, 99 pending steps. Validation stayed at 4 wins / 0 draws / 12 losses at all four snapshots (all wins against Random). Baseline and final snapshots each scored 2 wins / 1 draw / 29 losses in the 32-game holdout. No measured improvement; this is a plumbing check, not a comparison of tuned algorithms. Collection entropy remained approximately 1.090–1.098 nats. Training actions at the last interval were 32.4% left, 37.9% straight, 29.7% right. No observed right-turn collapse in this short run. Longer runs and multiple seeds are necessary. The two holdouts are documented for diagnostics, not used to select a checkpoint.
+
+---
+
+## Phase 4A: Double DQN (previous release)
+
+This version adds a CPU PyTorch Double DQN learner and playable DQN checkpoints to Phase 3. Prior gameplay, tournament and training infrastructure remain available.
+
+## Phase 4A quick start (Ubuntu / WSL)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+# CPU PyTorch wheel; avoid installing unnecessary CUDA packages.
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[dqn,play,dev,analysis]'
+pytest -q
+python -m tron_ai.play --checkpoint results/dqn_smoke/best.npz
+```
+
+Press 5 to select DQN (default when a checkpoint is supplied); keys 1–4 still select scripted opponents. Checkpoint board settings are used automatically. The bundled model is a weak early smoke-test agent, not a validated presentation opponent. To train a longer run:
+
+```bash
+python -m tron_ai.train dqn --seconds 300 --eval-interval 60 --eval-pairs 4 --stage survival --epsilon-decay 20000 --out results/dqn_survival
+python -m tron_ai.train plot results/dqn_survival
+python -m tron_ai.train evaluate results/dqn_survival/best.npz --pairs 20 --split holdout --out results/dqn_survival_holdout
+python -m tron_ai.play --checkpoint results/dqn_survival/best.npz
+```
+
+Use new output directories for each run. Evaluation games are additional to active training time. CPU threads default to 1; use the same thread count for controlled comparisons. `--epsilon-decay` is measured in environment steps, not seconds. The learner uses the original full 13-channel board, with a global CNN and a learned head-centred 5 × 5 branch, uniform bit-packed replay, Double DQN targets, Huber loss, Adam, and gradient norm clipping at 10. No action masking, reward shaping, or opponent-specific features are supplied. Terminal outcomes do not bootstrap. The 16,384-transition default replay allocates about 46 MiB for packed observation arrays, excluding batch tensors and metadata. There is no GPU support in this release.
+
+Hyperparameters are configurable (`python -m tron_ai.train dqn --help`). `evaluations.jsonl` contains epsilon, replay size, optimizer update count, and mean TD loss since the preceding evaluation (null before any update). The fixed benchmark still records action distributions and win rates. Best checkpoints maximize wins + half draws. Each checkpoint contains inference weights, not a complete training state. `--init-from PATH` initializes a new run from a DQN checkpoint but resets optimizer, exploration, replay, time and historical opponent pool. Full exact training resumption and automated curriculum advancement remain unimplemented.
+
+Measured bundled smoke command (12 seconds, not a tuned experiment):
+
+```bash
+python -m tron_ai.train dqn --seconds 12 --eval-interval 4 --eval-pairs 2 --warmup 128 --batch-size 32 --epsilon-decay 2000 --target-every 50 --out results/new_smoke
+```
+
+The best snapshot won 6/16 validation games (37.5%); independent holdout 14/32 (43.75%): Random 8/8, Safe 6/8, Space 0/8, Territory 0/8. These small single-seed samples are not proof of robust learning or relative algorithm superiority. The included `results/dqn_smoke` and `results/dqn_holdout` contain raw outcomes and weights. Python/PyTorch version and settings are recorded in run config.
+
+## 1. Setup (Ubuntu/WSL)
+
+Extract the new ZIP alongside Phase 1, not over it. From the new directory:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[play,dev]'
+pytest -q
+python -m tron_ai.play
+```
+
+On WSL2 with WSLg, the window should open on the Windows desktop. If display initialization fails, check `echo "$DISPLAY"` in Ubuntu and run `wsl --update` from Windows PowerShell; older WSL setups may require a configured X server. Pygame is optional for headless engine use (`.[dev]` only).
+
+### Play
+
+- Cyan is the human cycle; orange is the AI opponent.
+- Space starts a round with a three-second countdown, pauses/resumes during play, or starts the next round after a result.
+- Arrow keys or WASD select an absolute heading. U-turns are ignored. Only the first valid turn per movement tick is buffered.
+- 1–4 chooses an opponent before or between matches. Scores are tracked separately for each opponent during the session.
+- + / - changes speed (3–16 moves/sec; default 8); F11 toggles fullscreen; Esc exits.
+- Opening sides alternate after each completed round. The human interface deliberately uses fixed horizontal openings; randomized mirrored openings remain available for later training.
+
+| Key | Opponent | Logic |
+| --- | --- | --- |
+| 1 | Random actions | Uniformly samples all three relative moves |
+| 2 | Random safe | Samples immediately wall/trail-safe moves |
+| 3 | Flood-fill survival (default) | Maximises accessible cells and available exits |
+| 4 | Territory control | One-turn worst-case opponent lookahead, evaluates reachable territory using shortest-path distances |
+
+These are heuristic reference policies, ranked by the scripted tournament below, not calibrated human difficulty levels. They receive the same frozen game state as each other, never the human's pending input. Safe actions cannot guarantee survival because moves are simultaneous. The neural agents later will all receive the identical observation encoder described below.
+
+```bash
+python -m tron_ai.play --opponent territory --speed 6 --fullscreen
+SDL_VIDEODRIVER=dummy python -m tron_ai.play --smoke-test
+```
+
+The smoke test exercises ready, countdown, playing, paused and finished screens. The terminal demo is still available (`python -m tron_ai --games 5 --show-board`).
+
+### New modules
+
+- `opponents.py`: shared scripted policy interface, legal-move and flood-fill utilities, four reference policies.
+- `session.py`: human input buffering, round state machine, pause/countdown, speed, scorekeeping, atomic simulation stepping.
+- `play.py`: resizable, fullscreen-capable Pygame frontend with crash indicators and scoreboard.
+- `tests/test_phase2.py`: controller, opponent and optional graphical smoke tests.
+
+Validation caveat: Pygame was unavailable in the build environment, so graphical execution and WSLg integration must be verified locally. See VALIDATION.md.
+
+## 2. Small API example
+
+```python
+from tron_ai import Action, TronEnv
+
+env = TronEnv(seed=42)                         # board 30 x 24
+state = env.reset(seed=123, mode="random_mirrored")
+while not state.done:
+    observation_0 = env.observe(0)              # (13, 30, 30), uint8
+    observation_1 = env.observe(1)              # both from SAME state
+    # Replace these placeholder actions with independent policies.
+    action_0, action_1 = Action.STRAIGHT, Action.STRAIGHT
+    result = env.step((action_0, action_1))    # only ONE atomic step
+    state = result.state
+    print(result.rewards, result.collisions)
+print("winner", state.winner, "reason", state.end_reason)
+```
+
+A real training loop should choose both actions *from their pre-step observations*, then call `step((a0, a1))` exactly once. This avoids any algorithm receiving a first-move advantage. `advance(state, (a0, a1), config)` is a pure functional alternative that returns a `StepResult` without changing the input state. `TronEnv.load_state(state)` validates an externally supplied state for controlled tests/replays.
+
+## 3. Game rules (fixed contract)
+
+| Field | Definition |
+| --- | --- |
+| Default board | 30 columns × 24 rows, origin top left, increasing y downward |
+| Players | Two simultaneously moving cycles |
+| Actions | **0 = left, 1 = straight, 2 = right**, relative to current direction |
+| Occupancy | Every previously visited cell, **including both current head positions**, blocks all future entry |
+| Moves | Each policy acts using the same frozen previous state; turns and destinations are computed before collision decisions |
+| Wall collision | Moving outside `[0, width) × [0, height)` crashes |
+| Trail collision | Entering either player's visited cell crashes |
+| Free-cell head-on | Both targeting the same free cell gives a draw |
+| Head-swap | Both attempting to exchange occupied head cells gives a draw |
+| One crash | Survivor wins, even if the survivor enters its own next free cell in that terminal turn |
+| Two crashes | Draw; this includes both hitting walls, trails, or both targeting an occupied cell |
+| Step limit | Draw if both survive the final allowed turn |
+| Rewards | On win: `(1,-1)` or `(-1,1)`; on draw or nonterminal move: `(0,0)` |
+| Termination | `result.done`, `result.winner`, `result.end_reason`; can't step a finished game |
+
+Failed attempts do **not** add out-of-bounds or colliding target cells to the trails. A `StepResult` retains both `attempted_heads` and two per-player `collisions` for later Pygame impact effects.
+
+### Starting positions
+
+`reset(mode="fixed")` places players at mirrored horizontal positions on the centre row, facing inward. `reset(mode="fixed", swap_sides=True)` reverses player assignments. `reset(mode="random_mirrored", seed=123)` randomly varies the mirrored start distance, starting row/column, player-side assignment **and whether the players face horizontally or vertically inward**. A given seed fully reproduces the opening. You can force an orientation using `axis="horizontal"` or `axis="vertical"` for either mode. For evaluation, publish/freeze the seed list and balance both sides and orientations (using explicit `swap_sides` and `axis` or paired games).
+
+## 4. Shared 13-channel observation
+
+**Every AI receives exactly the same information** through `env.observe(player)` and the same `Action` and reward semantics. Neural-network architectures may differ. Observations are `np.uint8`, contiguous, channel-first `(13, S, S)` where `S=max(width,height)` (default `(13,30,30)`). Since the board is rectangular, it is centred and padded into a square for a **fixed-shaped observation** regardless of rotation. Padded cells are flagged as out-of-bounds in channel 12. The whole image is rotated so **the observing player's heading points north**, and own/opponent identities are relabelled accordingly. This is player-relative, not world-relative.
+
+| Channel | Meaning |
+| --- | --- |
+| 0 | Own visited cells (includes own head) |
+| 1 | Opponent visited cells (includes opponent head) |
+| 2 | Own current head (one-hot location) |
+| 3 | Opponent current head (one-hot location) |
+| 4–7 | Own heading N/E/S/W (one-hot at own head; only N active after normalisation) |
+| 8–11 | Opponent heading N/E/S/W in observer-relative coordinates (one-hot at opponent head) |
+| 12 | Padding outside the actual grid (physical walls); square border is an implicit wall |
+
+Both agents' head/trail positions, both headings, and the playable region are recoverable. No target action, opponent future intent, rewards or privileged information is leaked. Keep this encoding fixed across the three algorithms, including benchmark evaluations. When using a PyTorch network, convert `uint8` batches to `float32` before passing through the model.
+
+**Memory note:** these dense observations require `13×30×30 = 11,700` bytes each (uncompressed). Replay buffers containing many transitions will need deliberate memory planning in the DQN phase. The engine itself stores the underlying positions compactly as frozensets.
+
+## 5. Design and test boundaries
+
+- `src/tron_ai/engine.py`: rules, state dataclasses, pure transition function, reset, state validation.
+- `src/tron_ai/observations.py`: shared observation encoding, no rendering or training dependencies.
+- `src/tron_ai/__main__.py`: small terminal smoke demo with two random-action agents, **not** trained policies.
+- `tests/test_engine.py`: exact collision, terminal reward, reset, action and validation cases.
+- `tests/test_observations.py`: shape, channel semantics, player-relative alignment, direction remapping, padding, buffer safety.
+- `tests/test_properties.py`: 500 seeded random full games checking invariants and 1,000 state/turn comparisons with swapped player labels.
+
+Phase 3 now adds the shared training interface, fixed reference evaluation suite, opponent pool, logging and checkpoint infrastructure (see the guide below).
+
+## Scripted-agent tournament (new)
+
+The tournament uses the original Phase 2 engine and policies without changes.
+Install the optional plotting dependency:
+
+```bash
+python -m pip install -e '.[play,dev,analysis]'
+python -m tron_ai.tournament --pairs 100 --seed 2026 --workers 1 --out results/my_run
+```
+
+For a quicker smoke run use `--pairs 2 --no-plots --out results/smoke`.
+Use `--workers 4` to run games in parallel, if you have spare cores. The
+reference run in `results/tournament` used four workers; choose a different
+output directory to preserve the reference results. The runner overwrites files
+with matching names in its output directory.
+
+Each of the six distinct agent pairings uses the same sampled openings and
+agent RNG seeds. Each opening is played twice with sides exchanged; axes
+alternate between horizontal and vertical. The standard run has 1,200 games,
+200 per matchup and 600 per agent. The diagonal (self-matches) is not played.
+Policies choose from the same immutable pre-turn game state. No rendering,
+learning, reward shaping or policy modifications are used.
+
+Outputs:
+
+- `matches.csv`: one row per game, with seeds, starting coordinates, result,
+  duration in turns, termination reason, and policy CPU times.
+- `matchups.csv`: wins, losses, draws and average turns for each pairing.
+- `ranking.csv`: aggregate win/draw/loss rates, mean reward, tournament score
+  (win=1, draw=0.5, loss=0), and CPU milliseconds per decision (total policy CPU
+  time divided by total moves, including terminal moves).
+- `metadata.json`: run configuration, host information and elapsed time.
+- `win_rate_heatmap.png`, `outcomes.png`: plots (unless `--no-plots`).
+
+CPU timing excludes the engine, observation encoding, rendering and training;
+it measures process CPU time, not wall-clock latency. Parallel execution and
+hardware can affect these numbers. Run with a single worker on your machine for
+an isolated local timing comparison. Games sharing the same opening are paired,
+not independent samples; these results are descriptive rather than a formal
+statistical test. Scripted opponents read raw game state, rather than the neural
+observation tensor. The result establishes reference difficulty against this
+pool, not human difficulty or universal dominance. No training has occurred.
+
+## Phase 3 — Shared training guide
+
+Install with `python -m pip install -e '.[play,dev,analysis]'` (omit `play` for headless-only use). Run from the project directory with the virtualenv activated:
+
+```bash
+pytest -q
+python -m tron_ai.train reference --seconds 30 --eval-interval 10 --eval-pairs 4 --stage survival --out results/reference_run
+python -m tron_ai.train plot results/reference_run
+python -m tron_ai.train evaluate results/reference_run/best.npz --pairs 10 --split holdout --out results/reference_holdout
+explorer.exe results/reference_run
+```
+
+For a fast smoke test, use `--seconds 2 --eval-interval 1 --eval-pairs 1` and a fresh `--out` directory. The runner refuses to overwrite nonempty output directories. All evaluation games use the same board configuration as the saved model. `--pairs N` means N paired openings per opponent, each played twice, so an evaluation contains 8N games. Use even N for equal horizontal/vertical proportions. The standalone evaluate command can also repeat validation using `--split validation` and the original `--pairs` value. Longer and multiple-seed experiments will be needed for meaningful performance claims. Keep the holdout separate from model selection and tuning.
+
+### Architecture
+
+- `training/core.py`: observation-only Actor/Learner protocols, a transition (observation, action, reward, next observation, done), episode runner and adapter to the existing `Policy` interface.
+- `training/benchmark.py`: deterministic paired validation and separate holdout seeds; fresh frozen actors and opponents per match; aggregate and opponent-specific outcome metrics.
+- `training/pool.py`: weighted scripted pools and frozen historical actors, at most 12 by default; preserves best and recent snapshots. On selfplay, 40% historical, selected equally among best/latest/uniform modes (which can select the same checkpoint). If history is empty, use scripted only.
+- `training/checkpoints.py`: atomic compressed NumPy policy snapshots; numeric arrays and JSON metadata, without pickle. These are inference snapshots, **not** exact-resume training states. Full training-state persistence is deferred; DQN supports weights-only warm starts.
+- `training/runner.py`: serial time-budgeted loop, baseline + periodic + final evaluations, best score selection (ties retain earliest), logging. No Pygame rendering.
+- `training/reference.py`: a tiny stochastic linear policy with a terminal reward-weighted, episode-averaged policy-gradient update. It receives the common full board then internally extracts immediate free-space features. Its role is to verify learning plumbing; it is not DQN, PPO, Neuroevolution or a competitive fourth ML agent.
+- `training/plots.py`: offline diagnostic plots, active time and environment steps, rates per opponent, action fractions.
+
+A learner implements `act(observation)`, `update(transition)`, `snapshot()` (numeric arrays), and an algorithm name. An actor factory `(weights, board_config, seed) -> Actor` must instantiate a fresh inference-only actor without mutating the training learner. Future algorithms can accumulate replay, rollouts or population fitness inside the learner; algorithm-specific batch scheduling, final rollout handling, optimizer/population persistence and entropy diagnostics are Phase 4 work. For population search, every fitness game must be counted and timed; do not report only champion games. Policy snapshots can be wrapped with `ObservationPolicy` to use the existing session interface once algorithm-specific loaders are added. The Pygame menu also selects a DQN checkpoint when supplied with --checkpoint.
+
+### Manual curriculum (opponent probabilities per episode)
+
+| Stage flag | Random | Safe | Space | Territory | History |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| survival | 50% | 50% | 0 | 0 | 0 |
+| space | 10% | 45% | 45% | 0 | 0 |
+| competitive | 5% | 20% | 45% | 30% | 0 |
+| selfplay | 3% | 12% | 27% | 18% | 40% |
+
+These are proposed starting mixtures, not optimised hyperparameters. A run uses one selected stage; automatic stage progression and resuming across stages are not implemented. Historical snapshots enter after each evaluation, including the initial policy. A training side alternates each episode; opening positions and axis are varied by a separate seeded RNG. Evaluation uses paired sides, identical opening/actor/opponent seeds across comparisons, and alternates axes. The learner RNG is seeded once by the caller; the actor seed stored in training opening records is reserved for independently instantiated actors (evaluation uses it). Neural actor observations and action IDs are identical for all future algorithms; no masking and no shaping in this runner. Scripted opponents still see the full raw state as in Phase 2.
+
+### Timing and outputs
+
+Active time measures serial elapsed wall time for opponent sampling, game play, observation encoding and learner updates. Evaluation, file I/O and snapshot overhead are excluded from that budget and measured separately (total elapsed also includes unclassified overhead such as episode log writes and printing). Episode boundaries can overshoot the requested duration by a full episode, and evaluation checkpoints occur at the first episode boundary after an interval. One environment step is one simultaneous move, not two player moves. Run algorithms separately on the same hardware and control CPU/GPU settings; future GPU learners must synchronize asynchronous work before measuring. Episode-limited runs can be used for deterministic regression tests; time-limited runs are not guaranteed identical step counts across machines. For formal comparisons use fixed evaluation schedules, equal budgets, multiple seeds and disclose measured overshoot and setup/initialisation costs.
+
+- `config.json`: run/algorithm/board settings and environment metadata.
+- `evaluation_schedule.json`: complete fixed validation schedule.
+- `episodes.jsonl`: all training games, openings, opponents, rewards, action counts and cumulative time/steps.
+- `evaluations.jsonl`: checkpoint evaluations and cumulative training metrics.
+- `evaluation_*.json`: raw evaluation match records.
+- `checkpoints/*.npz`, `best.npz`: independent policy snapshots with metadata, selected by (wins + 0.5*draws)/games, equivalent to rescaled mean reward. They are not resume checkpoints.
+- `summary.json`: total time and steps, best checkpoint, termination criterion.
+- `learning_curves.png`: offline plot (created with plot command).
+
+The included `results/phase3_smoke` is a measured 3-second reference-only run on the full board, `results/phase3_selfplay` a 1-second self-play plumbing check, and `results/phase3_holdout` an independent 16-game assessment of the first run's selected checkpoint. No actual learning improvement was established; these tiny evaluation sets simply test the framework. The original tournament results are unchanged.
+
+## Phase 4C — Neuroevolution
+
+This version adds `evolution`, a NumPy population-based learner. Its policy
+uses the full 13-channel board and a redundant 5×5 head-centred patch, with
+16 ReLU hidden units and three unmasked action scores. It requires no PyTorch
+for evolution-only training. For all three algorithms and Pygame:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -e '.[dqn,ppo,play,dev,analysis]'
+pytest -q
+```
+
+Train with default 16 candidates, 4 elites, 4 paired openings per candidate:
+
+```bash
+python -m tron_ai.train evolution --seconds 300 --eval-interval 60 \
+  --eval-pairs 4 --stage survival --population 16 --elites 4 \
+  --fitness-pairs 4 --out results/evolution_survival
+python -m tron_ai.train plot results/evolution_survival
+python -m tron_ai.train evaluate results/evolution_survival/best.npz \
+  --pairs 10 --split holdout --out results/evolution_survival_holdout
+```
+
+The generation uses identical opponent draws and paired openings for every
+candidate, ranks mean terminal reward (+1/0/-1), retains elites and mutates
+random copies of those elites. Mutation defaults: 10% of parameters independently
+selected, Gaussian noise standard deviation 0.08. No crossover or gradient
+updates. All candidate matches count toward environment steps and active
+training time, as do selection and mutation. Population initialization happens
+before the runner timer, as for the other learners. Evaluation, snapshots and
+logging remain separate. Checkpoints are emitted at complete-generation
+boundaries, so a time budget can overshoot by a generation (potentially large
+against expensive opponents). An episode cap must allow at least one full
+generation and unused remainder is discarded. Generation fitness is noisy as
+opponents/openings change. `episodes.jsonl` records generation and candidate for
+every match; `evaluations.jsonl` includes latest best/mean/worst fitness and
+population size; `evolution_diagnostics.png` visualises sampled generations.
+
+`--init-from` loads one policy and initializes a new population from it and
+mutated copies. It is NOT an exact resume of population, RNG or opponent history.
+For example, to introduce stronger opponents after survival has been validated:
+
+```bash
+python -m tron_ai.train evolution --seconds 300 --stage space \
+  --init-from results/evolution_survival/best.npz \
+  --out results/evolution_space
+```
+
+Play with all three bundled experimental policies (keys 5, 6, 7):
+
+```bash
+python -m tron_ai.play --checkpoint results/dqn_smoke/best.npz \
+  --checkpoint results/ppo_smoke/checkpoints/checkpoint_0003.npz \
+  --checkpoint results/evolution_smoke/best.npz
+```
+
+These are smoke-test policies, NOT final calibrated presentation opponents.
+The evolution smoke run used 12 candidates, 3 elites, 2 fitness pairs, 12 seconds,
+4-second evaluation interval and 2 validation pairs. It completed 62 generations,
+2,976 games and 36,931 steps in 12.186 active seconds. Fixed validation wins rose
+from 4/16 to 6/16; the selected model won only 6/32 holdout games versus 9/32 for
+the initial policy. This is not evidence of reliable improvement. All raw results,
+plots and snapshots are included under `results/evolution_smoke`,
+`results/evolution_holdout` and `results/evolution_initial_holdout`.

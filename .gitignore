@@ -1,0 +1,5 @@
+vendor/
+vendor_build_backup/
+wheels/
+__pycache__/
+*.pyc
